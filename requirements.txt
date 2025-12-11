@@ -1,0 +1,13 @@
+streamlit
+opencv-python-headless
+numpy>=1.26
+Pillow
+pandas
+torch>=2.7.0
+torchvision
+matplotlib
+python-dotenv
+timm
+huggingface_hub
+regex
+ftfy
