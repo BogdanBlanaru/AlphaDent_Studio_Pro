@@ -2,31 +2,57 @@ import torch
 import numpy as np
 from PIL import Image
 import sys
-import time
+import cv2  # Global import
 
 # Robust Import Logic
 try:
     from transformers import Sam3Processor, Sam3Model
-    from huggingface_hub.utils import GatedRepoError
 except ImportError:
-    print("❌ CRITICAL ERROR: Libraries missing.")
+    print("❌ CRITICAL ERROR: Libraries missing. Run pip install transformers accelerate huggingface_hub")
     sys.exit(1)
 
 class AlphaDentSAM3:
     def __init__(self, model_id="facebook/sam3"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Default Competition Classes (Baseline)
-        self.default_classes = {
-            0: "abrasion on tooth surface",
-            1: "dental filling material",
-            2: "dental crown artificial tooth",
-            3: "cavity in tooth fissure",
-            4: "cavity on molar side",
-            5: "cavity on incisor side",
-            6: "cavity on incisor edge",
-            7: "cavity near gum line",
-            8: "cavity on tooth cusp tip"
+        # --- MISSION 2: PATHOLOGIES ---
+        self.pathology_classes = {
+            0: "dental abrasion wear on enamel surface",
+            1: "dental amalgam or composite filling restoration",
+            2: "artificial dental crown cap restoration",
+            3: "dark dental caries decay in tooth fissure",
+            4: "interproximal dental caries decay on molar side",
+            5: "interproximal dental caries decay on incisor side",
+            6: "dental caries decay on incisor edge",
+            7: "cervical dental caries decay near gum line",
+            8: "dental caries decay on tooth cusp tip"
+        }
+
+        # --- MISSION 3: ANATOMY (BALANCED) ---
+        # FIX: Added specific shape/location keywords to stop "Incisor" from taking over.
+        self.anatomy_classes = {
+            9: "wide large molar tooth back of mouth",      # Key: WIDE, BACK
+            10: "round premolar tooth middle of mouth",     # Key: ROUND, MIDDLE
+            11: "pointed canine tooth corner of mouth",     # Key: POINTED, CORNER
+            12: "narrow rectangular incisor tooth front of mouth" # Key: NARROW, FRONT
+        }
+
+        self.default_classes = {**self.pathology_classes, **self.anatomy_classes}
+
+        self.class_labels = {
+            0: "Abrasion (Wear)",
+            1: "Filling (Restoration)",
+            2: "Crown (Cap)",
+            3: "Caries - Fissure",
+            4: "Caries - Molar Side",
+            5: "Caries - Incisor Side",
+            6: "Caries - Incisor Edge",
+            7: "Caries - Gum Line",
+            8: "Caries - Cusp Tip",
+            9: "Molar",
+            10: "Premolar",
+            11: "Canine",
+            12: "Incisor"
         }
         
         self.model = None
@@ -47,48 +73,52 @@ class AlphaDentSAM3:
             print("Switching to Simulation Mode.")
             self.mock_mode = True
 
-    def predict(self, image_pil, custom_prompts=None, conf_threshold=0.30):
-        """
-        Runs prediction. 
-        'custom_prompts' allows overriding specific class descriptions.
-        """
-        results = []
-        
-        # Use defaults or overrides
-        active_classes = self.default_classes.copy()
-        if custom_prompts:
-            active_classes.update(custom_prompts)
+    def _calculate_iou(self, mask1, mask2):
+        intersection = np.logical_and(mask1, mask2).sum()
+        union = np.logical_or(mask1, mask2).sum()
+        if union == 0: return 0.0
+        return intersection / union
 
-        if self.mock_mode:
-            # Simulation for UI testing
-            import cv2
-            w, h = image_pil.size
-            mask = np.zeros((h, w), dtype=bool)
-            cv2.circle(mask.view(np.uint8), (int(w/2), int(h/2)), 100, 1, -1)
-            results.append({"class_id": 1, "mask": mask, "confidence": 0.95})
-            return results
+    def _apply_nms(self, detections, iou_threshold=0.3):
+        if not detections: return []
+        # Sort by confidence (highest first)
+        detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+        keep = []
+        while detections:
+            best = detections.pop(0)
+            keep.append(best)
+            remaining = []
+            for det in detections:
+                iou = self._calculate_iou(best['mask'], det['mask'])
+                if iou < iou_threshold:
+                    remaining.append(det)
+            detections = remaining
+        return keep
+
+    def predict(self, image_pil, custom_prompts=None, conf_threshold=0.25):
+        raw_results = []
+        active_prompts = self.default_classes.copy()
+        if custom_prompts:
+            active_prompts.update(custom_prompts)
+
+        if self.mock_mode: return []
 
         try:
             print(f"🧠 SAM 3 Inference started...")
+            total_pixels = image_pil.size[0] * image_pil.size[1]
             
-            # --- STABLE ITERATIVE INFERENCE ---
-            # We process one class prompt at a time to ensure stability
-            
-            for class_id, prompt_text in active_classes.items():
+            for class_id, prompt_text in active_prompts.items():
                 
-                # Prepare inputs for this specific concept
                 inputs = self.processor(
-                    images=image_pil,
-                    text=prompt_text,
+                    images=image_pil, 
+                    text=prompt_text, 
                     return_tensors="pt"
                 ).to(self.device)
 
                 with torch.no_grad():
                     outputs = self.model(**inputs)
-
-                target_sizes = [image_pil.size[::-1]]
                 
-                # Post-process
+                target_sizes = [image_pil.size[::-1]]
                 processed_results = self.processor.post_process_instance_segmentation(
                     outputs, 
                     threshold=conf_threshold, 
@@ -96,26 +126,47 @@ class AlphaDentSAM3:
                     target_sizes=target_sizes
                 )[0]
 
-                # Extract detections
                 for i, score in enumerate(processed_results["scores"]):
                     conf = float(score)
+                    mask_np = processed_results["masks"][i].cpu().numpy().astype(bool)
                     
-                    # Get mask
-                    mask_tensor = processed_results["masks"][i]
-                    mask_np = mask_tensor.cpu().numpy().astype(bool)
+                    # --- FILTERS ---
+                    mask_area = np.sum(mask_np)
+                    coverage = mask_area / total_pixels
                     
-                    # Store result
-                    results.append({
+                    # Relaxed Size Check: Allow big teeth, block tiny noise
+                    if coverage > 0.85: continue 
+                    if coverage < 0.0005: continue
+
+                    # NOTE: Removed solidity check to prevent filtering out complex cavities
+
+                    raw_results.append({
                         "class_id": class_id,
-                        "class_name": prompt_text,
+                        "prompt_used": prompt_text, 
                         "mask": mask_np,
                         "confidence": conf
                     })
-                    print(f"   Found Class {class_id} ('{prompt_text}'): {conf:.2%}")
+
+            # --- PHASE 2: SORTING ---
+            
+            # 1. Anatomy (Teeth Types 9-12)
+            anatomy_dets = [d for d in raw_results if d['class_id'] >= 9]
+            # Aggressive NMS: Force 1 label per tooth
+            final_anatomy = self._apply_nms(anatomy_dets, iou_threshold=0.25)
+            
+            # 2. Pathologies (0-8)
+            pathology_dets = [d for d in raw_results if d['class_id'] < 9]
+            # Standard NMS
+            final_pathology = self._apply_nms(pathology_dets, iou_threshold=0.3)
+            
+            # Combine
+            final_results = final_anatomy + final_pathology
+            
+            print(f"✅ Final Detection Count: {len(final_results)}")
+            return final_results
 
         except Exception as e:
             print(f"❌ Inference Error: {e}")
             import traceback
             traceback.print_exc()
-
-        return results
+            return []

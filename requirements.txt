@@ -11,3 +11,6 @@ timm
 huggingface_hub
 regex
 ftfy
+accelerate
+# Crucial: Install transformers from main branch for SAM 3 support
+git+https://github.com/huggingface/transformers.git
