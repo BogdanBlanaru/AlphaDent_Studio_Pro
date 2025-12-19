@@ -1,16 +1,12 @@
 streamlit
-opencv-python-headless
 numpy>=1.26
+opencv-python-headless
 Pillow
 pandas
-torch>=2.7.0
+torch>=2.4.0
 torchvision
 matplotlib
-python-dotenv
-timm
-huggingface_hub
-regex
-ftfy
 accelerate
-# Crucial: Install transformers from main branch for SAM 3 support
+scipy
+# Installing transformers from source for latest model support
 git+https://github.com/huggingface/transformers.git
