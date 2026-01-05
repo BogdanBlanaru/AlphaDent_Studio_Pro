@@ -8,5 +8,5 @@ torchvision
 matplotlib
 accelerate
 scipy
-# Installing transformers from source for latest model support
-git+https://github.com/huggingface/transformers.git
+scikit-image
+transformers
