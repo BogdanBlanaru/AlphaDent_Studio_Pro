@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
-import numpy as np  # <--- THIS WAS MISSING
+import numpy as np
 from PIL import Image
 from sam3_enhanced import AlphaDentEngine
 from visualizer_pro import draw_pro_overlay, generate_csv_report
@@ -9,7 +9,6 @@ from visualizer_pro import draw_pro_overlay, generate_csv_report
 # CONFIG
 st.set_page_config(page_title="AlphaDent AI | Clinical Suite", layout="wide", page_icon="🦷")
 
-# STYLING
 st.markdown("""
 <style>
     .stApp { background-color: #0b0f19; } 
@@ -26,21 +25,14 @@ with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/dental-braces.png", width=80)
     st.title("AlphaDent AI")
     st.caption("Meta SAM 3 • Clinical Edition")
-    
     st.divider()
-    
-    # Increased default threshold to stop weak hallucinations
-    conf_thresh = st.slider("Sensitivity (Confidence)", 0.1, 0.9, 0.40, 
-                            help="Increase this if you see too many false detections.")
-    
+    conf_thresh = st.slider("Sensitivity (Confidence)", 0.1, 0.9, 0.35)
     mode = st.radio("Processing Mode", ["Clinical Analysis", "Batch Segmentation"])
 
-# MAIN LOGIC
 engine = load_engine()
 
 if mode == "Clinical Analysis":
     st.header("Intraoral Diagnostics")
-    
     col_upload, col_view = st.columns([1, 3])
     
     with col_upload:
@@ -61,36 +53,27 @@ if mode == "Clinical Analysis":
             res = st.session_state['results']
             img = st.session_state['img']
             
-            # TABS
             tab_vis, tab_data = st.tabs(["👁️ Vision Overlay", "📋 Clinical Report"])
             
             with tab_vis:
-                # Generate Pro Overlay
                 overlay_img = draw_pro_overlay(img, res)
-                
-                # Comparison 
                 c1, c2 = st.columns(2)
                 with c1: 
                     st.subheader("Enhanced AI View")
                     st.image(overlay_img, use_container_width=True)
                 with c2: 
                     st.subheader("Contrast Enhanced Input")
-                    # Fixed the np error here by ensuring numpy is imported
                     st.image(engine._enhance_contrast(np.array(img)), use_container_width=True)
 
             with tab_data:
-                # METRICS
                 teeth_count = sum(1 for x in res if x['id'] == 9)
                 pathology_count = sum(1 for x in res if x['id'] < 9)
-                
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Teeth Identified", teeth_count)
                 m2.metric("Pathologies Found", pathology_count, delta_color="inverse")
                 m3.metric("Processing Time", f"{st.session_state['proc_time']:.2f}s")
                 
                 st.divider()
-                
-                # REPORT GENERATION
                 df = generate_csv_report(res, uploaded_file.name)
                 st.dataframe(df, use_container_width=True)
 
@@ -99,4 +82,4 @@ if mode == "Clinical Analysis":
 
 else:
     st.header("Batch Processor")
-    st.write("Upload a folder path to process multiple images for the competition.")
+    st.write("Batch mode active.")
