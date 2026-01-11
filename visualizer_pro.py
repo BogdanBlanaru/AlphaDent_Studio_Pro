@@ -4,7 +4,9 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
 COLORS = {
-    9: (255, 255, 255), 1: (128, 128, 128), 2: (70, 130, 180),
+    9: (255, 255, 255), 
+    1: (50, 50, 50),    # Amalgam = Dark Grey (Visually distinct)
+    2: (70, 130, 180),  
     3: (255, 50, 50), 4: (255, 100, 0), 5: (255, 200, 0),
     6: (150, 0, 150), 7: (200, 0, 50), 8: (255, 20, 100)
 }
@@ -12,9 +14,7 @@ COLORS = {
 def get_tooth_name(fdi_number):
     try:
         n = int(fdi_number)
-        digit = n % 10 # Last digit defines type (1=Central, 8=Wisdom)
-        
-        # 1-8 applies to ALL quadrants (1, 2, 3, 4)
+        digit = n % 10 
         if digit in [1, 2]: return "Incisor"
         if digit == 3:      return "Canine"
         if digit in [4, 5]: return "Premolar"
@@ -32,9 +32,8 @@ def draw_pro_overlay(image_pil, detections):
     for d in sorted_dets:
         if d['id'] == 9: continue 
         color = COLORS.get(d['id'], (255, 255, 255))
-        mask_uint8 = d['mask'].astype(np.uint8)
         mask_layer[d['mask']] = color
-        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(d['mask'].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(hud_layer, contours, -1, color, 2)
 
     alpha_mask = np.any(mask_layer > 0, axis=-1)
@@ -55,11 +54,11 @@ def draw_pro_overlay(image_pil, detections):
         if d['id'] == 9: # TOOTH
             fdi = d.get('fdi', '')
             if fdi:
-                # Cleaner Look: White text with shadow
                 draw.text((x-11, y-11), fdi, fill=(0,0,0), font=font)
                 draw.text((x-10, y-10), fdi, fill=(240,240,240), font=font)
         else: # PATHOLOGY
             text = d['label']
+            if "Filling" in text: text = "Filling" # Scurtam textul vizual
             bbox = draw.textbbox((x, y), text, font=font)
             draw.rectangle(bbox, fill=(0,0,0, 160))
             draw.text((bbox[0], bbox[1]), text, fill=COLORS.get(d['id']), font=font)
@@ -79,11 +78,21 @@ def generate_csv_report(detections, patient_id="Unknown"):
         t_mask = tooth['mask']
         for p in pathologies:
             p_mask = p['mask']
+            # Intersection Check
             if np.logical_and(t_mask, p_mask).any():
-                status = p['label']
+                label = p['label']
                 conf = p['conf']
-                if "Caries" in status: action = "Review"
-                elif "Filling" in status: action = "Monitor (Restored)"
+                
+                # Logic avansata de raportare
+                if "Caries" in label:
+                    status = label
+                    action = "Review (Treatment)"
+                elif "Filling" in label:
+                    status = "Restored (Amalgam)"
+                    action = "Monitor (Existing)"
+                elif "Crown" in label:
+                    status = "Restored (Crown)"
+                    action = "Monitor"
                 break 
         
         data.append({
@@ -97,7 +106,6 @@ def generate_csv_report(detections, patient_id="Unknown"):
 
     df = pd.DataFrame(data)
     if not df.empty:
-        # Sort properly (Numeric sort)
         df['sort_key'] = df['Tooth #'].astype(int)
         df = df.sort_values(by="sort_key").drop(columns=['sort_key'])
     return df
